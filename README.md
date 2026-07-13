@@ -1,36 +1,69 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Remote SSH — điều khiển server Ubuntu từ điện thoại
 
-## Getting Started
+Web app SSH client tối ưu cho mobile: terminal xterm.js tốc độ cao qua WebSocket, quản lý nhiều server (lưu localStorage), và giao diện chat riêng để giao việc cho **Claude CLI** trên server.
 
-First, run the development server:
+## Chạy
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev     # phát triển (http://localhost:3000)
+
+npm run build
+npm start       # production (nhanh hơn, dùng hằng ngày)
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Server lắng nghe trên `0.0.0.0:3000` — từ điện thoại cùng mạng Wi-Fi, mở `http://<IP-máy-tính>:3000`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Kiến trúc
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+Điện thoại (trình duyệt)                    Máy chạy app này              Server Ubuntu
+┌─────────────────────────┐    WebSocket   ┌────────────────┐    SSH     ┌────────────┐
+│ xterm.js / Claude chat  │ ◄────────────► │ server.js       │ ◄────────► │ sshd       │
+│ localStorage (thông tin │  binary frames │ (Next.js + ws   │   ssh2     │ claude CLI │
+│ server, lịch sử chat)   │                │  + ssh2)        │            │            │
+└─────────────────────────┘                └────────────────┘            └────────────┘
+```
 
-## Learn More
+- `server.js` — custom server: Next.js + 2 endpoint WebSocket
+  - `/ws/ssh` — shell tương tác; dữ liệu terminal đi bằng binary frame, không nén → độ trễ thấp nhất
+  - `/ws/claude` — chạy `claude -p --output-format stream-json` trên server qua SSH exec, stream từng sự kiện về UI
+- `lib/servers.ts` — lưu/đọc danh sách server + lịch sử chat trong localStorage
+- `app/page.tsx` — danh sách server, thêm/sửa/xóa
+- `app/terminal/[id]` — terminal xterm.js (WebGL renderer, dark/light, thanh phím Esc/Tab/Ctrl/mũi tên)
+- `app/claude/[id]` — chat giao việc cho Claude CLI, hiển thị tool đang chạy, chi phí, thời gian; tự resume phiên hội thoại (`--resume`)
 
-To learn more about Next.js, take a look at the following resources:
+## Dùng từ xa (không cùng Wi-Fi)
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Muốn dùng mọi nơi chỉ với điện thoại, deploy app này lên một VPS (ví dụ chính 1 server Ubuntu của bạn):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+# trên VPS
+git clone <repo> && cd remote-ssh
+npm install && npm run build
+npm start   # hoặc chạy bằng pm2: pm2 start server.js --name remote-ssh -- --prod
+```
 
-## Deploy on Vercel
+Nên đặt sau reverse proxy có HTTPS (Caddy/nginx + certbot) vì mật khẩu SSH đi qua kết nối này. Caddy tự lo WebSocket + HTTPS:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```
+your-domain.com {
+    reverse_proxy localhost:3000
+}
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Cài Claude CLI trên server Ubuntu
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash
+# hoặc: npm install -g @anthropic-ai/claude-code
+```
+
+Đăng nhập lần đầu (cần tương tác): mở tab **Terminal** của app, chạy `claude` và làm theo hướng dẫn. Sau đó bật cờ **"Server có cài Claude CLI"** cho server này để dùng giao diện chat.
+
+Trong màn hình chat (⚙️): đặt **thư mục làm việc** (project mà Claude sẽ thao tác) và bật/tắt **bypass permissions** (bật = Claude tự chạy mọi lệnh không hỏi — cần thiết khi giao việc từ xa).
+
+## Lưu ý bảo mật
+
+- Thông tin server (kể cả mật khẩu/private key) lưu **nguyên văn trong localStorage** của trình duyệt và gửi tới `server.js` khi kết nối. Chỉ chạy app này trên máy/VPS bạn tin tưởng, và luôn dùng HTTPS khi ra internet.
+- App không có đăng nhập — ai truy cập được URL đều dùng được. Khi deploy công khai, chặn bằng Caddy `basic_auth`, VPN (Tailscale) hoặc firewall.

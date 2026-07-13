@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ServerEntry, newId } from "@/lib/servers";
-import { Schedule, scheduleRequest, timeLabel } from "@/lib/schedules";
+import { Schedule, nextRunLabel, scheduleRequest, timeLabel } from "@/lib/schedules";
 
 const field =
   "w-full rounded-lg border border-border bg-surface-2 px-3 py-2.5 text-foreground placeholder:text-muted/70 outline-none focus:border-accent";
@@ -64,7 +64,26 @@ export default function ScheduleModal({
     [server]
   );
 
-  const save = (s: Schedule) => {
+  const save = async (s: Schedule) => {
+    // A missing directory used to make the cron job die silently, so refuse to save one.
+    setBusy("Đang kiểm tra thư mục…");
+    setErr("");
+    try {
+      const r = await scheduleRequest(server, { type: "check-dir", path: s.cwd });
+      if (!r.exists) {
+        setBusy("");
+        if (!confirm(`Thư mục "${s.cwd}" chưa tồn tại trên server.\n\nTạo mới thư mục này?`)) {
+          setErr(`Chưa lưu: thư mục "${s.cwd}" không tồn tại. Sửa lại đường dẫn hoặc cho phép tạo mới.`);
+          return;
+        }
+        setBusy("Đang tạo thư mục…");
+        await scheduleRequest(server, { type: "mkdir", path: s.cwd });
+      }
+    } catch (e) {
+      setBusy("");
+      setErr((e as Error).message);
+      return;
+    }
     const i = list.findIndex((x) => x.id === s.id);
     const next = i >= 0 ? list.map((x) => (x.id === s.id ? s : x)) : [...list, s];
     persist(next, "Đang lưu vào crontab…");
@@ -85,15 +104,35 @@ export default function ScheduleModal({
     );
 
   const runNow = async (s: Schedule) => {
-    setBusy("Đang chạy thử…");
     setErr("");
     try {
+      setBusy("Đang khởi chạy…");
       await scheduleRequest(server, { type: "run-now", scheduleId: s.id, schedules: list });
-      alert("Đã chạy. Claude đang làm việc trên server — bấm 📄 Log sau ít phút để xem kết quả.");
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
+      // Poll the log so a failure (missing dir, claude not installed) surfaces here
+      // instead of leaving the user to guess whether anything happened.
+      for (let i = 0; i < 20; i++) {
+        setBusy(`Claude đang chạy… (${i * 5}s)`);
+        await new Promise((r) => setTimeout(r, 5000));
+        const r = await scheduleRequest(server, { type: "log", scheduleId: s.id });
+        const text: string = r.text || "";
+        if (text.includes("LỖI:") || /command not found/i.test(text)) {
+          setBusy("");
+          setLogFor({ name: s.name || timeLabel(s), text });
+          setErr("Lần chạy thử này lỗi — xem log bên dưới.");
+          return;
+        }
+        // Claude finished: the run appends a trailing blank line after its output.
+        if (text.trim() && text.trim().split("\n").length > 1) {
+          setBusy("");
+          setLogFor({ name: s.name || timeLabel(s), text });
+          return;
+        }
+      }
       setBusy("");
+      setErr("Chạy quá 100s vẫn chưa xong — bấm 📄 Log sau ít phút để xem kết quả.");
+    } catch (e) {
+      setBusy("");
+      setErr((e as Error).message);
     }
   };
 
@@ -177,6 +216,11 @@ export default function ScheduleModal({
                           <p className="mt-1 truncate font-mono text-[10px] text-muted">
                             📁 {s.cwd} · {s.allowBash ? "⚠️ Bash bật" : "🔒 chỉ đọc/sửa file"}
                           </p>
+                          {s.enabled && (
+                            <p className="mt-0.5 text-[10px] text-accent">
+                              ⏳ chạy sau {nextRunLabel(s)}
+                            </p>
+                          )}
                         </div>
                         <button
                           onClick={() => toggle(s)}

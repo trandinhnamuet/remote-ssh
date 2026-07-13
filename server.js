@@ -238,10 +238,19 @@ function buildScheduleCommand(s, model) {
   if (model) flags.push("--model", shq(model));
 
   const log = `"$HOME/.remote-ssh/${s.id}.log"`;
+  // Everything (including the cd) runs inside the log redirect. An earlier version put
+  // `cd || exit` outside it, so a missing directory killed the run before the log file
+  // was ever created — the failure was completely silent.
+  const body = [
+    'echo "===== $(date -Is) ====="',
+    `if cd "$TARGET" 2>/dev/null; then cat "$HOME/.remote-ssh/${s.id}.prompt" | claude ${flags.join(" ")}; else echo "LỖI: không vào được thư mục $TARGET — thư mục không tồn tại?"; fi`,
+    "echo",
+  ].join("; ");
   const inner = [
     'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/bin:/usr/local/bin:$PATH"',
-    `cd ${shq(s.cwd)} || exit 90`,
-    `{ echo "===== $(date -Is) ====="; cat "$HOME/.remote-ssh/${s.id}.prompt" | claude ${flags.join(" ")}; echo; } >> ${log} 2>&1`,
+    'mkdir -p "$HOME/.remote-ssh"',
+    `TARGET=${shq(s.cwd)}`,
+    `{ ${body}; } >> ${log} 2>&1`,
     `tail -n 3000 ${log} > ${log}.tmp && mv ${log}.tmp ${log}`,
   ].join("; ");
   return `bash -lc ${shq(inner)}`;
@@ -301,7 +310,7 @@ function handleSchedule(ws) {
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (conn) return;
 
-    const kinds = ["list", "save", "log", "run-now"];
+    const kinds = ["list", "save", "log", "run-now", "check-dir", "mkdir"];
     if (!kinds.includes(msg.type)) return;
 
     conn = new Client();
@@ -312,6 +321,25 @@ function handleSchedule(ws) {
           let schedules = [];
           try { schedules = JSON.parse(out.trim() || "[]"); } catch {}
           sendJson({ type: "list-result", schedules: Array.isArray(schedules) ? schedules : [] });
+        });
+        return;
+      }
+
+      if (msg.type === "check-dir" || msg.type === "mkdir") {
+        const path = String(msg.path || "");
+        if (!path) {
+          sendJson({ type: "error", message: "Thiếu đường dẫn." });
+          try { ws.close(); } catch {}
+          return;
+        }
+        const cmd =
+          msg.type === "mkdir"
+            ? `bash -lc ${shq(`mkdir -p ${shq(path)} && echo EXISTS`)}`
+            : `bash -lc ${shq(`[ -d ${shq(path)} ] && echo EXISTS || echo MISSING`)}`;
+        runCmd(cmd, (code, out, errOut) => {
+          if (out.includes("EXISTS")) sendJson({ type: "dir-result", exists: true });
+          else if (out.includes("MISSING")) sendJson({ type: "dir-result", exists: false });
+          else sendJson({ type: "error", message: (errOut || out || "Không kiểm tra được thư mục").trim().slice(0, 300) });
         });
         return;
       }

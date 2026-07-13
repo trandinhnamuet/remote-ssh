@@ -1,7 +1,8 @@
 /* Custom server: Next.js + WebSocket (ws) + ssh2.
- * Two WS endpoints:
- *   /ws/ssh    — interactive shell, binary frames for terminal I/O (low latency)
- *   /ws/claude — runs Claude CLI on the remote host via exec, streams NDJSON events
+ * WS endpoints:
+ *   /ws/ssh      — interactive shell, binary frames for terminal I/O (low latency)
+ *   /ws/claude   — runs Claude CLI on the remote host via exec, streams NDJSON events
+ *   /ws/schedule — manages daily Claude runs via the remote host's own crontab
  */
 const { createServer } = require("http");
 const { parse } = require("url");
@@ -206,6 +207,181 @@ function handleClaude(ws) {
   });
 }
 
+/* ---------- Scheduled Claude runs (remote crontab) ----------
+ * The schedule has to fire when the user's phone is closed, so it lives in the
+ * target host's own crontab — not a timer in the browser or in this process.
+ * Source of truth on the host: ~/.remote-ssh/schedules.json (+ one .prompt/.log per
+ * schedule). The crontab block below is regenerated from that list on every save.
+ */
+const CRON_DIR = '"$HOME/.remote-ssh"';
+const MARK_START = "# >>> remote-ssh schedules >>>";
+const MARK_END = "# <<< remote-ssh schedules <<<";
+
+function b64(s) {
+  return Buffer.from(String(s), "utf8").toString("base64");
+}
+
+// Schedule ids land in filenames and in a shell script, so keep them strictly alphanumeric.
+function safeId(id) {
+  return /^[a-z0-9]{4,32}$/i.test(String(id || "")) ? String(id) : null;
+}
+
+function buildScheduleCommand(s, model) {
+  // Fresh session every run: no --resume, so yesterday's context never leaks in.
+  const flags = ["-p", "--permission-mode", "acceptEdits"];
+  const tools = ["Read", "Glob", "Grep", "Edit", "Write", "TodoWrite"];
+  if (s.allowBash) tools.push("Bash");
+  flags.push("--allowedTools", shq(tools.join(" ")));
+  // File tools are confined to the cwd below (no --add-dir is passed). Bash is the one
+  // tool that could step outside it, so it is opt-in per schedule.
+  if (!s.allowBash) flags.push("--disallowedTools", shq("Bash"));
+  if (model) flags.push("--model", shq(model));
+
+  const log = `"$HOME/.remote-ssh/${s.id}.log"`;
+  const inner = [
+    'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/bin:/usr/local/bin:$PATH"',
+    `cd ${shq(s.cwd)} || exit 90`,
+    `{ echo "===== $(date -Is) ====="; cat "$HOME/.remote-ssh/${s.id}.prompt" | claude ${flags.join(" ")}; echo; } >> ${log} 2>&1`,
+    `tail -n 3000 ${log} > ${log}.tmp && mv ${log}.tmp ${log}`,
+  ].join("; ");
+  return `bash -lc ${shq(inner)}`;
+}
+
+function buildCronBlock(schedules, model) {
+  const lines = [MARK_START, "CRON_TZ=Asia/Ho_Chi_Minh"];
+  for (const s of schedules) {
+    if (!s.enabled) continue;
+    lines.push(`${s.minute} ${s.hour} * * * ${buildScheduleCommand(s, model)}`);
+  }
+  lines.push(MARK_END);
+  return lines.join("\n") + "\n";
+}
+
+function buildSaveScript(schedules, model) {
+  const lines = ["set -e", `mkdir -p ${CRON_DIR}`];
+  for (const s of schedules) {
+    lines.push(`echo ${shq(b64(s.prompt))} | base64 -d > "$HOME/.remote-ssh/${s.id}.prompt"`);
+  }
+  lines.push(`echo ${shq(b64(JSON.stringify(schedules)))} | base64 -d > "$HOME/.remote-ssh/schedules.json"`);
+  lines.push(`NEW=$(echo ${shq(b64(buildCronBlock(schedules, model)))} | base64 -d)`);
+  lines.push(
+    `{ crontab -l 2>/dev/null | sed '/${MARK_START}/,/${MARK_END}/d'; echo "$NEW"; } | crontab -`
+  );
+  lines.push("echo SAVED_OK");
+  return `bash -c ${shq(lines.join("\n"))}`;
+}
+
+function handleSchedule(ws) {
+  let conn = null;
+  const sendJson = (obj) => {
+    if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
+  };
+
+  const runCmd = (cmd, onDone) => {
+    conn.exec(cmd, (err, s) => {
+      if (err) {
+        sendJson({ type: "error", message: err.message });
+        try { ws.close(); } catch {}
+        return;
+      }
+      let out = "";
+      let errOut = "";
+      s.on("data", (d) => { out += d.toString(); });
+      s.stderr.on("data", (d) => { errOut += d.toString(); });
+      s.on("close", (code) => {
+        onDone(code ?? -1, out, errOut);
+        try { ws.close(); } catch {}
+        try { conn.end(); } catch {}
+      });
+    });
+  };
+
+  ws.on("message", (data) => {
+    let msg;
+    try { msg = JSON.parse(data.toString()); } catch { return; }
+    if (conn) return;
+
+    const kinds = ["list", "save", "log", "run-now"];
+    if (!kinds.includes(msg.type)) return;
+
+    conn = new Client();
+    attachCommonSsh(conn, msg, sendJson, ws);
+    conn.on("ready", () => {
+      if (msg.type === "list") {
+        runCmd(`cat "$HOME/.remote-ssh/schedules.json" 2>/dev/null || echo "[]"`, (code, out) => {
+          let schedules = [];
+          try { schedules = JSON.parse(out.trim() || "[]"); } catch {}
+          sendJson({ type: "list-result", schedules: Array.isArray(schedules) ? schedules : [] });
+        });
+        return;
+      }
+
+      if (msg.type === "save") {
+        const list = Array.isArray(msg.schedules) ? msg.schedules : [];
+        const clean = [];
+        for (const s of list) {
+          const id = safeId(s.id);
+          if (!id || !s.cwd || !String(s.prompt || "").trim()) continue;
+          clean.push({
+            id,
+            name: String(s.name || "").slice(0, 80),
+            hour: Math.min(23, Math.max(0, parseInt(s.hour, 10) || 0)),
+            minute: Math.min(59, Math.max(0, parseInt(s.minute, 10) || 0)),
+            prompt: String(s.prompt),
+            cwd: String(s.cwd),
+            allowBash: !!s.allowBash,
+            enabled: s.enabled !== false,
+          });
+        }
+        runCmd(buildSaveScript(clean, msg.model), (code, out, errOut) => {
+          if (code === 0 && out.includes("SAVED_OK")) {
+            sendJson({ type: "saved", schedules: clean });
+          } else {
+            sendJson({ type: "error", message: (errOut || out || "Lưu lịch thất bại").trim().slice(0, 500) });
+          }
+        });
+        return;
+      }
+
+      const id = safeId(msg.scheduleId);
+      if (!id) {
+        sendJson({ type: "error", message: "ID lịch không hợp lệ." });
+        try { ws.close(); } catch {}
+        return;
+      }
+
+      if (msg.type === "log") {
+        runCmd(`tail -c 20000 "$HOME/.remote-ssh/${id}.log" 2>/dev/null || echo "(chưa có log — lịch chưa chạy lần nào)"`,
+          (code, out) => sendJson({ type: "log-result", text: out })
+        );
+        return;
+      }
+
+      if (msg.type === "run-now") {
+        const s = (Array.isArray(msg.schedules) ? msg.schedules : []).find((x) => safeId(x.id) === id);
+        if (!s || !s.cwd) {
+          sendJson({ type: "error", message: "Không tìm thấy lịch." });
+          try { ws.close(); } catch {}
+          return;
+        }
+        const cmd = buildScheduleCommand({ ...s, id }, msg.model);
+        // Detach so the SSH channel can close while Claude keeps working.
+        runCmd(`nohup ${cmd} >/dev/null 2>&1 & echo STARTED`, (code, out, errOut) => {
+          if (out.includes("STARTED")) sendJson({ type: "run-started" });
+          else sendJson({ type: "error", message: (errOut || out || "Không chạy được").trim().slice(0, 500) });
+        });
+      }
+    });
+
+    try { conn.connect(buildSshConfig(msg)); }
+    catch (e) { sendJson({ type: "error", message: e.message }); try { ws.close(); } catch {} }
+  });
+
+  ws.on("close", () => {
+    try { if (conn) conn.end(); } catch {}
+  });
+}
+
 /* ---------- Boot ---------- */
 app.prepare().then(() => {
   const server = createServer((req, res) => {
@@ -214,8 +390,10 @@ app.prepare().then(() => {
 
   const wssTerm = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   const wssClaude = new WebSocketServer({ noServer: true, perMessageDeflate: false });
+  const wssSchedule = new WebSocketServer({ noServer: true, perMessageDeflate: false });
   wssTerm.on("connection", handleTerminal);
   wssClaude.on("connection", handleClaude);
+  wssSchedule.on("connection", handleSchedule);
 
   const nextUpgrade = app.getUpgradeHandler();
   server.on("upgrade", (req, socket, head) => {
@@ -224,6 +402,8 @@ app.prepare().then(() => {
       wssTerm.handleUpgrade(req, socket, head, (ws) => wssTerm.emit("connection", ws, req));
     } else if (pathname === "/ws/claude") {
       wssClaude.handleUpgrade(req, socket, head, (ws) => wssClaude.emit("connection", ws, req));
+    } else if (pathname === "/ws/schedule") {
+      wssSchedule.handleUpgrade(req, socket, head, (ws) => wssSchedule.emit("connection", ws, req));
     } else {
       // Let Next handle its own upgrades (HMR in dev)
       nextUpgrade(req, socket, head);

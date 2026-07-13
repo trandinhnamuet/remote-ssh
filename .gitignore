@@ -24,6 +24,10 @@
 .DS_Store
 *.pem
 
+# thông tin kết nối server (không commit)
+server.txt
+*.key
+
 # debug
 npm-debug.log*
 yarn-debug.log*

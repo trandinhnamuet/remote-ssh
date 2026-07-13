@@ -13,6 +13,7 @@ export interface ServerEntry {
   hasClaude: boolean;
   claudeCwd?: string;
   claudeBypass?: boolean;
+  claudeModel?: string;
   claudeSessionId?: string;
   createdAt: number;
 }

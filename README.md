@@ -33,24 +33,41 @@ Server lắng nghe trên `0.0.0.0:3000` — từ điện thoại cùng mạng Wi
 - `app/terminal/[id]` — terminal xterm.js (WebGL renderer, dark/light, thanh phím Esc/Tab/Ctrl/mũi tên)
 - `app/claude/[id]` — chat giao việc cho Claude CLI, hiển thị tool đang chạy, chi phí, thời gian; tự resume phiên hội thoại (`--resume`)
 
-## Dùng từ xa (không cùng Wi-Fi)
+## Đã deploy: https://ssh.ics.vn
 
-Muốn dùng mọi nơi chỉ với điện thoại, deploy app này lên một VPS (ví dụ chính 1 server Ubuntu của bạn):
+Chạy trên server ICS (161.118.203.249), có HTTPS và mật khẩu bảo vệ (HTTP Basic Auth, user `admin`).
+
+| | |
+|---|---|
+| Thư mục | `/home/ubuntu/web/remote-ssh` |
+| Process | pm2 `remote-ssh` (khai báo trong `~/web/ecosystem.config.js`) |
+| Cổng | `127.0.0.1:3100` — chỉ nghe localhost, ra ngoài qua nginx |
+| nginx | `/etc/nginx/sites-available/ssh.ics.vn` (WebSocket + `proxy_read_timeout 86400s`) |
+| Mật khẩu web | `/etc/nginx/.htpasswd-remote-ssh` |
+| SSL | Let's Encrypt, tự gia hạn bằng `certbot.timer` |
+
+### Cập nhật code lên server
 
 ```bash
-# trên VPS
-git clone <repo> && cd remote-ssh
-npm install && npm run build
-npm start   # hoặc chạy bằng pm2: pm2 start server.js --name remote-ssh -- --prod
+# từ máy dev
+tar -czf /tmp/d.tar.gz --exclude=node_modules --exclude=.next --exclude=.git .
+scp -i <key> /tmp/d.tar.gz ubuntu@161.118.203.249:/tmp/
+
+# trên server
+cd ~/web/remote-ssh && tar -xzf /tmp/d.tar.gz && npm ci && npm run build
+pm2 restart remote-ssh
 ```
 
-Nên đặt sau reverse proxy có HTTPS (Caddy/nginx + certbot) vì mật khẩu SSH đi qua kết nối này. Caddy tự lo WebSocket + HTTPS:
+### Đổi mật khẩu web
 
+```bash
+sudo sh -c 'echo "admin:$(openssl passwd -apr1)" > /etc/nginx/.htpasswd-remote-ssh'
+sudo systemctl reload nginx
 ```
-your-domain.com {
-    reverse_proxy localhost:3000
-}
-```
+
+### Deploy chỗ khác
+
+App cần một Node process chạy liên tục (WebSocket + SSH session dài) nên **không chạy được trên Vercel**. Dùng VPS + pm2, hoặc Railway/Render/Fly.io.
 
 ## Cài Claude CLI trên server Ubuntu
 

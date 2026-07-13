@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   ChatItem,
@@ -14,6 +14,21 @@ import {
 import ThemeToggle from "@/components/ThemeToggle";
 
 type RunState = "idle" | "connecting" | "running";
+
+// Aliases accepted by `claude --model` (checked against `claude -p ... /model` output, CLI v2.1.207).
+const MODEL_OPTIONS: { label: string; value: string }[] = [
+  { label: "Mặc định", value: "" },
+  { label: "Sonnet", value: "sonnet" },
+  { label: "Opus", value: "opus" },
+  { label: "Haiku", value: "haiku" },
+  { label: "Fable", value: "fable" },
+  { label: "Best (tự chọn model tốt nhất)", value: "best" },
+  { label: "Opusplan (plan bằng Opus, code bằng Sonnet)", value: "opusplan" },
+  { label: "Sonnet · 1M context", value: "sonnet[1m]" },
+  { label: "Opus · 1M context", value: "opus[1m]" },
+  { label: "Fable · 1M context", value: "fable[1m]" },
+];
+const CUSTOM_MODEL = "__custom__";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function toolSummary(name: string, input: any): string {
@@ -41,6 +56,7 @@ export default function ClaudePage() {
   const [showSettings, setShowSettings] = useState(false);
   const [cwd, setCwd] = useState("");
   const [bypass, setBypass] = useState(true);
+  const [modelChoice, setModelChoice] = useState("");
   const [checking, setChecking] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -55,8 +71,23 @@ export default function ClaudePage() {
       setItems(loadChat(id));
       setCwd(s.claudeCwd ?? "");
       setBypass(s.claudeBypass ?? true);
+      setModelChoice(s.claudeModel ?? "");
     }
   }, [id]);
+
+  const usage = useMemo(() => {
+    let cost = 0;
+    let turns = 0;
+    let runs = 0;
+    for (const it of items) {
+      if (it.kind === "result") {
+        runs += 1;
+        if (it.costUsd) cost += it.costUsd;
+        if (it.numTurns) turns += it.numTurns;
+      }
+    }
+    return { cost, turns, runs };
+  }, [items]);
 
   useEffect(() => {
     if (server) saveChat(id, items);
@@ -156,6 +187,7 @@ export default function ClaudePage() {
           cwd: s.claudeCwd || undefined,
           sessionId: useSession ? s.claudeSessionId : undefined,
           bypass: s.claudeBypass ?? true,
+          model: s.claudeModel || undefined,
         })
       );
     };
@@ -270,9 +302,14 @@ export default function ClaudePage() {
   }
 
   function saveSettings() {
-    updateServer(id, { claudeCwd: cwd.trim() || undefined, claudeBypass: bypass });
+    updateServer(id, { claudeCwd: cwd.trim() || undefined, claudeBypass: bypass, claudeModel: modelChoice || undefined });
     setShowSettings(false);
-    push({ kind: "info", text: `Đã lưu: thư mục "${cwd.trim() || "~"}", quyền ${bypass ? "bypass" : "acceptEdits"}.`, ts: Date.now() });
+    const modelLabel = MODEL_OPTIONS.find((m) => m.value === modelChoice)?.label ?? modelChoice;
+    push({
+      kind: "info",
+      text: `Đã lưu: thư mục "${cwd.trim() || "~"}", quyền ${bypass ? "bypass" : "acceptEdits"}, model ${modelLabel}.`,
+      ts: Date.now(),
+    });
   }
 
   if (server === null) {
@@ -305,7 +342,11 @@ export default function ClaudePage() {
             {busy ? (
               <span className="text-accent">● đang chạy…</span>
             ) : (
-              <span>{model ? `sẵn sàng · ${model}` : "sẵn sàng"}</span>
+              <span>
+                sẵn sàng
+                {(model || MODEL_OPTIONS.find((m) => m.value === modelChoice)?.label) &&
+                  ` · ${model || MODEL_OPTIONS.find((m) => m.value === modelChoice)?.label}`}
+              </span>
             )}
           </p>
         </div>
@@ -351,6 +392,40 @@ export default function ClaudePage() {
               className="h-5 w-5 accent-[var(--accent)]"
             />
           </label>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-muted">Model</label>
+            <select
+              value={MODEL_OPTIONS.some((m) => m.value === modelChoice) ? modelChoice : CUSTOM_MODEL}
+              onChange={(e) => setModelChoice(e.target.value === CUSTOM_MODEL ? "custom" : e.target.value)}
+              className="w-full rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm outline-none focus:border-accent"
+            >
+              {MODEL_OPTIONS.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+              <option value={CUSTOM_MODEL}>Tùy chỉnh (nhập model ID)…</option>
+            </select>
+            {!MODEL_OPTIONS.some((m) => m.value === modelChoice) && (
+              <input
+                className="mt-2 w-full rounded-lg border border-border bg-surface-2 px-3 py-2 font-mono text-sm outline-none focus:border-accent"
+                value={modelChoice === "custom" ? "" : modelChoice}
+                onChange={(e) => setModelChoice(e.target.value)}
+                placeholder="VD: claude-opus-4-8"
+                autoCapitalize="none"
+                autoCorrect="off"
+              />
+            )}
+          </div>
+
+          <div className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-xs">
+            <p className="mb-1 font-medium text-muted">Usage phiên này (lưu trên máy này)</p>
+            <p className="text-foreground/90">
+              💰 ${usage.cost.toFixed(4)} · {usage.turns} lượt · {usage.runs} lần chạy
+            </p>
+          </div>
+
           <div className="flex flex-wrap gap-2">
             <button onClick={saveSettings} className="rounded-lg bg-accent px-3 py-2 text-sm font-semibold text-accent-fg">
               Lưu

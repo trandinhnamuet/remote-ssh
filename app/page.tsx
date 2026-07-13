@@ -9,6 +9,7 @@ import {
   deleteServer,
 } from "@/lib/servers";
 import ServerForm from "@/components/ServerForm";
+import ScheduleModal from "@/components/ScheduleModal";
 import ThemeToggle from "@/components/ThemeToggle";
 
 export default function Home() {
@@ -18,6 +19,7 @@ export default function Home() {
   const [editing, setEditing] = useState<ServerEntry | null>(null);
   const [adding, setAdding] = useState(false);
   const [menuFor, setMenuFor] = useState<string | null>(null);
+  const [scheduleFor, setScheduleFor] = useState<ServerEntry | null>(null);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- client-only localStorage read after hydration
@@ -120,7 +122,7 @@ export default function Home() {
             </div>
 
             {menuFor === s.id && (
-              <div className="absolute right-2 top-10 z-20 w-36 overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
+              <div className="absolute right-2 top-10 z-20 w-52 overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
                 <button
                   className="block w-full px-4 py-2.5 text-left text-sm"
                   onClick={() => {
@@ -130,6 +132,17 @@ export default function Home() {
                 >
                   ✏️ Sửa
                 </button>
+                {s.hasClaude && (
+                  <button
+                    className="block w-full px-4 py-2.5 text-left text-sm"
+                    onClick={() => {
+                      setScheduleFor(s);
+                      setMenuFor(null);
+                    }}
+                  >
+                    ⏰ Hẹn giờ nhắn tin
+                  </button>
+                )}
                 <button
                   className="block w-full px-4 py-2.5 text-left text-sm text-danger"
                   onClick={() => onDelete(s)}
@@ -158,6 +171,10 @@ export default function Home() {
             setEditing(null);
           }}
         />
+      )}
+
+      {scheduleFor && (
+        <ScheduleModal server={scheduleFor} onClose={() => setScheduleFor(null)} />
       )}
 
       {menuFor && (

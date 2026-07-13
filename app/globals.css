@@ -66,6 +66,15 @@ body {
   scrollbar-width: thin;
 }
 
+/* xterm hardcodes white-on-black for IME composition text. Mobile soft keyboards
+   compose every word, so in light mode the word being typed showed inverted until
+   it was committed. Follow the active theme instead, underlined like a native IME. */
+.term-wrap .xterm .composition-view {
+  background: var(--term-bg);
+  color: var(--foreground);
+  border-bottom: 2px solid var(--accent);
+}
+
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;

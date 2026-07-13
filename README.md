@@ -32,6 +32,8 @@ Server lắng nghe trên `0.0.0.0:3000` — từ điện thoại cùng mạng Wi
 - `app/page.tsx` — danh sách server, thêm/sửa/xóa
 - `app/terminal/[id]` — terminal xterm.js (WebGL renderer, dark/light, thanh phím Esc/Tab/Ctrl/mũi tên)
 - `app/claude/[id]` — chat giao việc cho Claude CLI, hiển thị tool đang chạy, chi phí, thời gian; tự resume phiên hội thoại (`--resume`)
+- `/ws/schedule` (trong `server.js`) — hẹn giờ nhắn Claude hằng ngày bằng crontab của chính server đích (không phải hẹn giờ trong trình duyệt), mỗi lần chạy là session mới, giới hạn trong 1 thư mục
+- `components/ScheduleModal.tsx`, `lib/schedules.ts` — UI quản lý lịch (menu ⋯ trên card server)
 
 ## Đã deploy: https://ssh.ics.vn
 
@@ -48,13 +50,14 @@ Chạy trên server ICS (161.118.203.249), có HTTPS và mật khẩu bảo vệ
 
 ### Cập nhật code lên server
 
+`~/web/remote-ssh` trên server là git clone thật của repo này (branch `main`), không phải copy rời rạc — code ở máy dev, GitHub và server đồng bộ qua cùng một lịch sử commit.
+
 ```bash
-# từ máy dev
-tar -czf /tmp/d.tar.gz --exclude=node_modules --exclude=.next --exclude=.git .
-scp -i <key> /tmp/d.tar.gz ubuntu@161.118.203.249:/tmp/
+# máy dev: commit & push như bình thường
+git push origin main
 
 # trên server
-cd ~/web/remote-ssh && tar -xzf /tmp/d.tar.gz && npm ci && npm run build
+cd ~/web/remote-ssh && git pull && npm ci && npm run build
 pm2 restart remote-ssh
 ```
 

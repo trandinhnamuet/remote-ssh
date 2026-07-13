@@ -34,6 +34,20 @@ Server lắng nghe trên `0.0.0.0:3000` — từ điện thoại cùng mạng Wi
 - `app/claude/[id]` — chat giao việc cho Claude CLI, hiển thị tool đang chạy, chi phí, thời gian; tự resume phiên hội thoại (`--resume`)
 - `/ws/schedule` (trong `server.js`) — hẹn giờ nhắn Claude hằng ngày bằng crontab của chính server đích (không phải hẹn giờ trong trình duyệt), mỗi lần chạy là session mới, giới hạn trong 1 thư mục
 - `components/ScheduleModal.tsx`, `lib/schedules.ts` — UI quản lý lịch (menu ⋯ trên card server)
+- `lib/useDragReorder.ts` — giữ ~400ms để kéo sắp xếp lại thứ tự card server
+
+## Cài như app trên điện thoại (PWA)
+
+Mở https://ssh.ics.vn rồi:
+
+- **Android/Chrome**: menu ⋮ → *Cài đặt ứng dụng* (hoặc banner tự hiện)
+- **iOS/Safari**: nút Chia sẻ → *Thêm vào Màn hình chính*
+
+App chạy toàn màn hình (không thanh địa chỉ), icon là dấu nhắc `>_` nền xanh giống icon trên header.
+
+- `app/manifest.ts` — web manifest (standalone, portrait, theme màu tối)
+- `app/icon.svg`, `app/apple-icon.png`, `app/favicon.ico`, `public/icons/*` — bộ icon, gồm bản `maskable` cho Android
+- `public/sw.js` — service worker **network-first**: luôn ưu tiên bản mới từ mạng (app điều khiển server thật, phục vụ UI cũ từ cache còn tệ hơn báo lỗi), cache chỉ làm phương án dự phòng khi mất mạng. Chỉ đăng ký ở production.
 
 ## Đã deploy: https://ssh.ics.vn
 

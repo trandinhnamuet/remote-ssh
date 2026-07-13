@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import RegisterSW from "@/components/RegisterSW";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -15,11 +16,14 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Remote SSH",
   description: "Mobile SSH terminal & Claude CLI remote control",
+  applicationName: "Remote SSH",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
     title: "Remote SSH",
   },
+  // Điện thoại hiện số trong tin nhắn/địa chỉ thành link gọi, làm vỡ layout terminal.
+  formatDetection: { telephone: false },
 };
 
 export const viewport: Viewport = {
@@ -51,7 +55,10 @@ export default function RootLayout({
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
       </head>
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="min-h-full flex flex-col">
+        {children}
+        <RegisterSW />
+      </body>
     </html>
   );
 }

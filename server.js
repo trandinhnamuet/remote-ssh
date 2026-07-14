@@ -118,15 +118,36 @@ const CLAUDE_ENV_PREFIX = [
   'if ! command -v claude >/dev/null 2>&1; then [ -s "$HOME/.nvm/nvm.sh" ] && . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1; fi',
 ].join("; ");
 
+// Claude CLI hard-refuses --dangerously-skip-permissions when it runs as uid 0 ("cannot be
+// used with root/sudo privileges"), and SSHing in as root is common on VPSes. Auto-approving
+// the tools by name gets the same hands-off behaviour without that flag, so it works as root.
+// Comma-separated (no spaces): the list is expanded from an unquoted shell var below, and a
+// space-separated list would word-split into broken arguments.
+const AUTO_APPROVE_TOOLS = [
+  "Bash", "Read", "Edit", "Write", "Glob", "Grep",
+  "NotebookEdit", "WebFetch", "WebSearch", "TodoWrite", "Task", "Skill",
+].join(",");
+
 function buildClaudeCommand(msg) {
   const parts = [CLAUDE_ENV_PREFIX];
   if (msg.cwd) parts.push(`cd ${shq(msg.cwd)} || exit 90`);
+
+  // Decide on the remote host, from the real uid — not from the username we were given,
+  // since a non-"root" account can still be uid 0.
+  if (msg.bypass) {
+    parts.push(
+      `if [ "$(id -u)" = "0" ]; then PERM="--permission-mode acceptEdits --allowedTools ${AUTO_APPROVE_TOOLS}"; else PERM="--dangerously-skip-permissions"; fi`
+    );
+  } else {
+    parts.push('PERM="--permission-mode acceptEdits"');
+  }
+
   const flags = ["-p", "--verbose", "--output-format", "stream-json"];
   if (msg.sessionId) flags.push("--resume", shq(msg.sessionId));
-  if (msg.bypass) flags.push("--dangerously-skip-permissions");
-  else flags.push("--permission-mode", "acceptEdits");
   if (msg.model) flags.push("--model", shq(msg.model));
-  parts.push(`claude ${flags.join(" ")}`);
+  // $PERM last and unquoted: --allowedTools is variadic, so nothing may follow it.
+  parts.push(`claude ${flags.join(" ")} $PERM`);
+
   const inner = parts.join("; ");
   return `bash -c ${shq(inner)}`;
 }

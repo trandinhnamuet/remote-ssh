@@ -307,7 +307,7 @@ export default function ClaudePage() {
     const modelLabel = MODEL_OPTIONS.find((m) => m.value === modelChoice)?.label ?? modelChoice;
     push({
       kind: "info",
-      text: `Đã lưu: thư mục "${cwd.trim() || "~"}", quyền ${bypass ? "bypass" : "acceptEdits"}, model ${modelLabel}.`,
+      text: `Đã lưu: thư mục "${cwd.trim() || "~"}", ${bypass ? "tự chạy lệnh" : "chỉ đọc/sửa file"}, model ${modelLabel}.`,
       ts: Date.now(),
     });
   }
@@ -380,16 +380,18 @@ export default function ClaudePage() {
               autoCorrect="off"
             />
           </div>
-          <label className="flex items-center justify-between text-sm">
+          <label className="flex items-start justify-between gap-3 text-sm">
             <span>
-              Bypass permissions{" "}
-              <span className="text-xs text-muted">(tự chạy mọi lệnh, không hỏi)</span>
+              Tự chạy lệnh, không hỏi
+              <span className="mt-0.5 block text-[11px] leading-4 text-muted">
+                Tắt thì Claude chỉ đọc/sửa file, không chạy được lệnh shell.
+              </span>
             </span>
             <input
               type="checkbox"
               checked={bypass}
               onChange={(e) => setBypass(e.target.checked)}
-              className="h-5 w-5 accent-[var(--accent)]"
+              className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--accent)]"
             />
           </label>
 

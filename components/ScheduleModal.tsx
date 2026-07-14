@@ -267,9 +267,10 @@ export default function ScheduleModal({
               )}
 
               <p className="mt-3 text-[11px] leading-4 text-muted">
-                Lịch được ghi vào crontab của chính server (múi giờ Asia/Ho_Chi_Minh) nên
-                chạy độc lập, không cần mở app. Mỗi lần chạy là một session Claude mới —
-                không mang theo ngữ cảnh hội thoại cũ.
+                Giờ nhập là <strong>giờ Việt Nam</strong>, kể cả khi server chạy múi giờ
+                khác. Lịch được ghi vào crontab của chính server nên chạy độc lập, không
+                cần mở app. Mỗi lần chạy là một session Claude mới — không mang theo ngữ
+                cảnh hội thoại cũ.
               </p>
             </>
           )}

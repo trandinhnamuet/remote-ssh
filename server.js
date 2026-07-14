@@ -226,7 +226,25 @@ function safeId(id) {
   return /^[a-z0-9]{4,32}$/i.test(String(id || "")) ? String(id) : null;
 }
 
-function buildScheduleCommand(s, model) {
+/**
+ * Vixie cron (Debian/Ubuntu) silently IGNORES CRON_TZ — verified on the box: a job set
+ * with CRON_TZ=Asia/Ho_Chi_Minh never fired at the Vietnamese time, because cron read the
+ * fields as server-local (UTC) time. A 05:30 VN schedule was really running at 12:30 VN.
+ *
+ * So don't ask cron to do timezones. Fire the job every hour instead and let the job itself
+ * check the Vietnamese hour and bail out otherwise. The minute field still has to be
+ * server-local (see MINUTE_SHIFT in buildSaveScript) for hosts whose UTC offset is not a
+ * whole hour. This stays correct no matter what timezone the host is in, and survives the
+ * host switching to/from DST without anyone re-saving the schedule.
+ */
+function vnHourGuard(hour) {
+  const hh = String(hour).padStart(2, "0");
+  // `date -Is` -> 2026-07-14T05:30:00+07:00; chars 12-13 are the hour. Avoids `%`, which
+  // cron would otherwise treat as a newline inside the command.
+  return `[ "$(TZ=Asia/Ho_Chi_Minh date -Is | cut -c12-13)" = "${hh}" ] || exit 0`;
+}
+
+function buildScheduleCommand(s, model, withGuard) {
   // Fresh session every run: no --resume, so yesterday's context never leaks in.
   const flags = ["-p", "--permission-mode", "acceptEdits"];
   const tools = ["Read", "Glob", "Grep", "Edit", "Write", "TodoWrite"];
@@ -246,21 +264,25 @@ function buildScheduleCommand(s, model) {
     `if cd "$TARGET" 2>/dev/null; then cat "$HOME/.remote-ssh/${s.id}.prompt" | claude ${flags.join(" ")}; else echo "LỖI: không vào được thư mục $TARGET — thư mục không tồn tại?"; fi`,
     "echo",
   ].join("; ");
-  const inner = [
+  const steps = [
     'export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$HOME/bin:/usr/local/bin:$PATH"',
+  ];
+  if (withGuard) steps.push(vnHourGuard(s.hour));
+  steps.push(
     'mkdir -p "$HOME/.remote-ssh"',
     `TARGET=${shq(s.cwd)}`,
     `{ ${body}; } >> ${log} 2>&1`,
-    `tail -n 3000 ${log} > ${log}.tmp && mv ${log}.tmp ${log}`,
-  ].join("; ");
-  return `bash -lc ${shq(inner)}`;
+    `tail -n 3000 ${log} > ${log}.tmp && mv ${log}.tmp ${log}`
+  );
+  return `bash -lc ${shq(steps.join("; "))}`;
 }
 
 function buildCronBlock(schedules, model) {
-  const lines = [MARK_START, "CRON_TZ=Asia/Ho_Chi_Minh"];
+  const lines = [MARK_START, "# Giờ trong UI là giờ VN; job tự kiểm tra giờ VN (cron bỏ qua CRON_TZ)."];
   for (const s of schedules) {
     if (!s.enabled) continue;
-    lines.push(`${s.minute} ${s.hour} * * * ${buildScheduleCommand(s, model)}`);
+    // Minute is filled in by the save script, which knows the host's real UTC offset.
+    lines.push(`__MIN_${s.id}__ * * * * ${buildScheduleCommand(s, model, true)}`);
   }
   lines.push(MARK_END);
   return lines.join("\n") + "\n";
@@ -272,7 +294,26 @@ function buildSaveScript(schedules, model) {
     lines.push(`echo ${shq(b64(s.prompt))} | base64 -d > "$HOME/.remote-ssh/${s.id}.prompt"`);
   }
   lines.push(`echo ${shq(b64(JSON.stringify(schedules)))} | base64 -d > "$HOME/.remote-ssh/schedules.json"`);
-  lines.push(`NEW=$(echo ${shq(b64(buildCronBlock(schedules, model)))} | base64 -d)`);
+
+  // Cron's minute field is server-local. Vietnam is UTC+7 (no DST), so shift each minute by
+  // the host offset's sub-hour part — 0 on a UTC host, 30 on e.g. an Asia/Kolkata one.
+  lines.push(
+    'OFF=$(date +%z)',
+    'OFF_MIN=$(( 10#${OFF:1:2} * 60 + 10#${OFF:3:2} ))',
+    '[ "${OFF:0:1}" = "-" ] && OFF_MIN=$(( -OFF_MIN ))',
+    'MINUTE_SHIFT=$(( ((OFF_MIN - 420) % 60 + 60) % 60 ))',
+    // A no-op expression so `sed $SED_ARGS` still has a script when no schedule is enabled.
+    "SED_ARGS='-e s/__noop__/__noop__/'"
+  );
+  for (const s of schedules) {
+    if (!s.enabled) continue;
+    lines.push(
+      `SED_ARGS="$SED_ARGS -e s/__MIN_${s.id}__/$(( (${s.minute} + MINUTE_SHIFT) % 60 ))/"`
+    );
+  }
+  lines.push(
+    `NEW=$(echo ${shq(b64(buildCronBlock(schedules, model)))} | base64 -d | sed $SED_ARGS)`
+  );
   lines.push(
     `{ crontab -l 2>/dev/null | sed '/${MARK_START}/,/${MARK_END}/d'; echo "$NEW"; } | crontab -`
   );

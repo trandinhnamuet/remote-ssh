@@ -260,7 +260,8 @@ function buildScheduleCommand(s, model, withGuard) {
   // `cd || exit` outside it, so a missing directory killed the run before the log file
   // was ever created — the failure was completely silent.
   const body = [
-    'echo "===== $(date -Is) ====="',
+    // Giờ VN cho khớp với giờ người dùng đặt lịch — host thường chạy UTC.
+    'echo "===== $(TZ=Asia/Ho_Chi_Minh date -Is) ====="',
     `if cd "$TARGET" 2>/dev/null; then cat "$HOME/.remote-ssh/${s.id}.prompt" | claude ${flags.join(" ")}; else echo "LỖI: không vào được thư mục $TARGET — thư mục không tồn tại?"; fi`,
     "echo",
   ].join("; ");

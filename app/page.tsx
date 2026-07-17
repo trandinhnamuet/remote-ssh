@@ -10,6 +10,7 @@ import {
   deleteServer,
 } from "@/lib/servers";
 import { useDragReorder } from "@/lib/useDragReorder";
+import { clearSiteAuth } from "@/lib/siteAuth";
 import ServerForm from "@/components/ServerForm";
 import ScheduleModal from "@/components/ScheduleModal";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -69,7 +70,18 @@ export default function Home() {
             <p className="text-xs text-muted">Điều khiển server từ điện thoại</p>
           </div>
         </div>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              if (confirm("Đăng xuất khỏi ứng dụng trên thiết bị này?")) clearSiteAuth();
+            }}
+            aria-label="Đăng xuất"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-border bg-surface text-lg active:scale-95 transition-transform"
+          >
+            🔒
+          </button>
+          <ThemeToggle />
+        </div>
       </header>
 
       {loaded && servers.length === 0 && (

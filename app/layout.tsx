@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import RegisterSW from "@/components/RegisterSW";
+import AuthGate from "@/components/AuthGate";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -56,7 +57,7 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeInit }} />
       </head>
       <body className="min-h-full flex flex-col">
-        {children}
+        <AuthGate>{children}</AuthGate>
         <RegisterSW />
       </body>
     </html>

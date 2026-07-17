@@ -11,6 +11,7 @@ import {
   saveChat,
   updateServer,
 } from "@/lib/servers";
+import { authFrame, clearSiteAuth } from "@/lib/siteAuth";
 import ThemeToggle from "@/components/ThemeToggle";
 
 type RunState = "idle" | "connecting" | "running";
@@ -179,6 +180,7 @@ export default function ClaudePage() {
     wsRef.current = ws;
 
     ws.onopen = () => {
+      ws.send(authFrame());
       ws.send(
         JSON.stringify({
           type: "run",
@@ -194,16 +196,20 @@ export default function ClaudePage() {
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data as string);
+        if (msg.type === "auth-ok") return; // reply to the auth frame, the "run" request follows
         if (msg.type === "started") setRun("running");
         else if (msg.type === "event") handleEvent(msg.event);
         else if (msg.type === "raw") {
           push({ kind: "info", text: msg.data, ts: Date.now() });
         } else if (msg.type === "error") {
+          if (msg.message === "UNAUTHORIZED") clearSiteAuth();
           push({
             kind: "error",
             text:
               msg.message === "AUTH_FAILED"
                 ? "Xác thực SSH thất bại — kiểm tra mật khẩu/key."
+                : msg.message === "UNAUTHORIZED"
+                ? "Phiên đăng nhập hết hạn — vui lòng đăng nhập lại."
                 : msg.message,
             ts: Date.now(),
           });
@@ -278,10 +284,14 @@ export default function ClaudePage() {
     setChecking(true);
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws/claude`);
-    ws.onopen = () => ws.send(JSON.stringify({ type: "check", ...connParams(s) }));
+    ws.onopen = () => {
+      ws.send(authFrame());
+      ws.send(JSON.stringify({ type: "check", ...connParams(s) }));
+    };
     ws.onmessage = (e) => {
       try {
         const msg = JSON.parse(e.data as string);
+        if (msg.type === "auth-ok") return; // reply to the auth frame, the "check" request follows
         if (msg.type === "check-result") {
           setChecking(false);
           push({
@@ -294,7 +304,12 @@ export default function ClaudePage() {
           });
         } else if (msg.type === "error") {
           setChecking(false);
-          push({ kind: "error", text: `Không kiểm tra được: ${msg.message}`, ts: Date.now() });
+          if (msg.message === "UNAUTHORIZED") {
+            clearSiteAuth();
+            push({ kind: "error", text: "Phiên đăng nhập hết hạn — vui lòng đăng nhập lại.", ts: Date.now() });
+          } else {
+            push({ kind: "error", text: `Không kiểm tra được: ${msg.message}`, ts: Date.now() });
+          }
         }
       } catch {}
     };

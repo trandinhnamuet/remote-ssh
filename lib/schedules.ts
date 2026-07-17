@@ -1,4 +1,5 @@
 import { ServerEntry } from "./servers";
+import { authFrame, clearSiteAuth } from "./siteAuth";
 
 export interface Schedule {
   id: string;
@@ -35,6 +36,7 @@ export function scheduleRequest(s: ServerEntry, req: Req): Promise<any> {
     }, 30000);
 
     ws.onopen = () => {
+      ws.send(authFrame());
       ws.send(
         JSON.stringify({
           ...req,
@@ -53,13 +55,17 @@ export function scheduleRequest(s: ServerEntry, req: Req): Promise<any> {
       if (settled) return;
       try {
         const msg = JSON.parse(e.data as string);
+        if (msg.type === "auth-ok") return; // reply to the auth frame, not the real request
         if (msg.type === "error") {
           settled = true;
           clearTimeout(timer);
+          if (msg.message === "UNAUTHORIZED") clearSiteAuth();
           reject(
             new Error(
               msg.message === "AUTH_FAILED"
                 ? "Xác thực SSH thất bại — kiểm tra mật khẩu/key."
+                : msg.message === "UNAUTHORIZED"
+                ? "Phiên đăng nhập hết hạn — vui lòng đăng nhập lại."
                 : msg.message
             )
           );

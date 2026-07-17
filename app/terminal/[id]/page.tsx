@@ -5,6 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import { ServerEntry, getServer } from "@/lib/servers";
+import { authFrame, clearSiteAuth } from "@/lib/siteAuth";
 import { getTheme } from "@/components/ThemeToggle";
 
 const DARK_THEME = {
@@ -233,6 +234,7 @@ export default function TerminalPage() {
       wsRef.current = ws;
 
       ws.onopen = () => {
+        ws.send(authFrame());
         ws.send(
           JSON.stringify({
             type: "connect",
@@ -252,17 +254,24 @@ export default function TerminalPage() {
         if (typeof ev.data === "string") {
           try {
             const msg = JSON.parse(ev.data);
-            if (msg.type === "ready") {
+            if (msg.type === "auth-ok") {
+              // reply to the auth frame — the "connect" request follows separately
+            } else if (msg.type === "ready") {
               setStatus("connected");
               term.focus();
             } else if (msg.type === "banner") {
               term.write(String(msg.data).replace(/\n/g, "\r\n"));
             } else if (msg.type === "error") {
-              setErrMsg(
-                msg.message === "AUTH_FAILED"
-                  ? "Xác thực thất bại — kiểm tra lại mật khẩu/key."
-                  : msg.message
-              );
+              if (msg.message === "UNAUTHORIZED") {
+                clearSiteAuth();
+                setErrMsg("Phiên đăng nhập hết hạn — vui lòng đăng nhập lại.");
+              } else {
+                setErrMsg(
+                  msg.message === "AUTH_FAILED"
+                    ? "Xác thực thất bại — kiểm tra lại mật khẩu/key."
+                    : msg.message
+                );
+              }
               setStatus("error");
             } else if (msg.type === "exit") {
               setStatus("closed");

@@ -6,6 +6,7 @@
  */
 const { createServer } = require("http");
 const { parse } = require("url");
+const crypto = require("crypto");
 const next = require("next");
 const { WebSocketServer } = require("ws");
 const { Client } = require("ssh2");
@@ -36,6 +37,52 @@ function buildSshConfig(msg) {
   return cfg;
 }
 
+/* ---------- App-level login (replaces nginx Basic Auth) ----------
+ * A browser's WebSocket API cannot attach custom headers to the handshake, and
+ * (verified empirically) warming the browser's HTTP Basic-Auth cache via a same-origin
+ * fetch() does NOT carry over to WebSocket requests — only credentials entered into the
+ * browser's native prompt do. That native prompt is exactly what we're trying to avoid
+ * asking for every time, so nginx-level auth can't satisfy "remember this in the app".
+ *
+ * Instead the app owns login: every WS connection's first message must be
+ * {type:"auth", username, password}; nothing else is processed until that succeeds.
+ * SITE_USER/SITE_PASSWORD unset disables the gate entirely (local dev convenience,
+ * matching the MSG_API_TOKEN convention in app/api/msg).
+ */
+function timingSafeEq(a, b) {
+  const ab = Buffer.from(String(a ?? ""));
+  const bb = Buffer.from(String(b ?? ""));
+  if (ab.length !== bb.length) {
+    crypto.timingSafeEqual(ab, ab); // burn roughly the same time on a length mismatch
+    return false;
+  }
+  return crypto.timingSafeEqual(ab, bb);
+}
+
+function siteAuthOk(username, password) {
+  const wantPass = process.env.SITE_PASSWORD || "";
+  if (!wantPass) return true;
+  return timingSafeEq(username, process.env.SITE_USER || "") && timingSafeEq(password, wantPass);
+}
+
+/** Wraps a `ws.on("message", ...)` handler so nothing runs until the connection auths. */
+function withSiteAuth(ws, sendJson, onMessage) {
+  let authed = false;
+  return (data, isBinary) => {
+    if (authed) return onMessage(data, isBinary);
+    if (isBinary) { try { ws.close(4401, "unauthorized"); } catch {} return; }
+    let m;
+    try { m = JSON.parse(data.toString()); } catch { try { ws.close(4401, "bad auth frame"); } catch {} return; }
+    if (m.type !== "auth" || !siteAuthOk(m.username, m.password)) {
+      sendJson({ type: "error", message: "UNAUTHORIZED" });
+      try { ws.close(4401, "unauthorized"); } catch {}
+      return;
+    }
+    authed = true;
+    sendJson({ type: "auth-ok" });
+  };
+}
+
 function attachCommonSsh(conn, msg, sendJson, ws) {
   conn.on("keyboard-interactive", (name, instructions, lang, prompts, finish) => {
     finish(prompts.map(() => msg.password || ""));
@@ -57,7 +104,7 @@ function handleTerminal(ws) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
   };
 
-  ws.on("message", (data, isBinary) => {
+  ws.on("message", withSiteAuth(ws, sendJson, (data, isBinary) => {
     if (isBinary) {
       if (stream) stream.write(data);
       return;
@@ -99,7 +146,7 @@ function handleTerminal(ws) {
     } else if (msg.type === "resize") {
       if (stream) stream.setWindow(msg.rows || 24, msg.cols || 80, 0, 0);
     }
-  });
+  }));
 
   ws.on("close", () => {
     try { if (stream) stream.close(); } catch {}
@@ -159,7 +206,7 @@ function handleClaude(ws) {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(obj));
   };
 
-  ws.on("message", (data) => {
+  ws.on("message", withSiteAuth(ws, sendJson, (data) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
 
@@ -220,7 +267,7 @@ function handleClaude(ws) {
       try { if (stream) stream.signal("INT"); } catch {}
       try { if (stream) stream.close(); } catch {}
     }
-  });
+  }));
 
   ws.on("close", () => {
     try { if (stream) stream.close(); } catch {}
@@ -368,7 +415,7 @@ function handleSchedule(ws) {
     });
   };
 
-  ws.on("message", (data) => {
+  ws.on("message", withSiteAuth(ws, sendJson, (data) => {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
     if (conn) return;
@@ -466,7 +513,7 @@ function handleSchedule(ws) {
 
     try { conn.connect(buildSshConfig(msg)); }
     catch (e) { sendJson({ type: "error", message: e.message }); try { ws.close(); } catch {} }
-  });
+  }));
 
   ws.on("close", () => {
     try { if (conn) conn.end(); } catch {}

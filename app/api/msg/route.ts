@@ -2,12 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 
-// Kênh nhắn tin đơn giản, không xác thực — chỉ để 2 phiên Claude Code CLI (trên 2 máy
-// khác nhau) trao đổi log/thông tin debug qua HTTP thay vì copy-paste tay.
+// Kênh nhắn tin đơn giản — chỉ để 2 phiên Claude Code CLI (trên 2 máy khác nhau) trao đổi
+// log/thông tin debug qua HTTP thay vì copy-paste tay. Xác thực bằng 1 password chung
+// (biến env MSG_API_TOKEN), gửi qua header "x-api-key" hoặc query "?token=".
 const FILE = path.join(process.cwd(), ".data", "messages.json");
 const MAX_MESSAGES = 500;
 
 type Msg = { id: number; from: string; text: string; time: string };
+
+// Nếu không cấu hình MSG_API_TOKEN thì endpoint mở tự do (tiện chạy `npm run dev` local).
+function isAuthorized(request: NextRequest): boolean {
+  const token = process.env.MSG_API_TOKEN;
+  if (!token) return true;
+  const provided = request.headers.get("x-api-key") || request.nextUrl.searchParams.get("token");
+  return provided === token;
+}
 
 function readMessages(): Msg[] {
   try {
@@ -25,6 +34,10 @@ function writeMessages(messages: Msg[]) {
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   const since = Number(request.nextUrl.searchParams.get("since") || 0);
   const messages = readMessages().filter((m) => m.id > since);
 
@@ -41,6 +54,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   const body = await request.json().catch(() => ({}) as Record<string, unknown>);
   const text = String(body.text ?? "").slice(0, 20000);
   const from = String(body.from ?? "unknown").slice(0, 100);
@@ -58,7 +75,11 @@ export async function POST(request: NextRequest) {
   return NextResponse.json({ ok: true, message: msg });
 }
 
-export async function DELETE() {
+export async function DELETE(request: NextRequest) {
+  if (!isAuthorized(request)) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+
   writeMessages([]);
   return NextResponse.json({ ok: true });
 }

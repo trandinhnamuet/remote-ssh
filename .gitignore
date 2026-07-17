@@ -28,6 +28,9 @@
 server.txt
 *.key
 
+# dữ liệu runtime (kênh nhắn tin /api/msg, v.v.)
+/.data
+
 # debug
 npm-debug.log*
 yarn-debug.log*

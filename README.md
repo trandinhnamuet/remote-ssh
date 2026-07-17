@@ -35,6 +35,7 @@ Server lắng nghe trên `0.0.0.0:3000` — từ điện thoại cùng mạng Wi
 - `/ws/schedule` (trong `server.js`) — hẹn giờ nhắn Claude hằng ngày bằng crontab của chính server đích (không phải hẹn giờ trong trình duyệt), mỗi lần chạy là session mới, giới hạn trong 1 thư mục
 - `components/ScheduleModal.tsx`, `lib/schedules.ts` — UI quản lý lịch (menu ⋯ trên card server)
 - `lib/useDragReorder.ts` — giữ ~400ms để kéo sắp xếp lại thứ tự card server
+- `components/AuthGate.tsx`, `lib/siteAuth.ts` — đăng nhập app (xem mục Đăng nhập ứng dụng bên dưới)
 
 ## Cài như app trên điện thoại (PWA)
 
@@ -49,9 +50,31 @@ App chạy toàn màn hình (không thanh địa chỉ), icon là dấu nhắc `
 - `app/icon.svg`, `app/apple-icon.png`, `app/favicon.ico`, `public/icons/*` — bộ icon, gồm bản `maskable` cho Android
 - `public/sw.js` — service worker **network-first**: luôn ưu tiên bản mới từ mạng (app điều khiển server thật, phục vụ UI cũ từ cache còn tệ hơn báo lỗi), cache chỉ làm phương án dự phòng khi mất mạng. Chỉ đăng ký ở production.
 
+## Đăng nhập ứng dụng
+
+App có màn đăng nhập riêng (không phải hộp thoại mật khẩu mặc định của trình duyệt). Đăng nhập một lần, trình duyệt **nhớ mãi** (lưu trong localStorage) — không hỏi lại mỗi lần mở app.
+
+Vì sao không dùng nginx Basic Auth như trước: hộp thoại mật khẩu mặc định của trình duyệt không cho JavaScript đọc lại nội dung đã gõ, nên không thể lưu vào localStorage được. Đã thử "làm nóng" cache Basic Auth bằng `fetch()` kèm header — không có tác dụng với WebSocket (đã kiểm chứng thực tế: `fetch` xác thực thành công nhưng WebSocket mở ngay sau đó vẫn bị đóng, vì trình duyệt không dùng lại cache đó cho WS). Nên xác thực giờ nằm hoàn toàn trong app:
+
+- Mỗi kết nối WebSocket (`/ws/ssh`, `/ws/claude`, `/ws/schedule`) bắt buộc gửi `{type:"auth", username, password}` làm tin nhắn đầu tiên; server (`server.js`) so khớp với biến môi trường `SITE_USER`/`SITE_PASSWORD` (constant-time compare) trước khi xử lý bất kỳ điều gì khác.
+- Không set 2 biến đó → tắt hẳn cơ chế đăng nhập (tiện cho `npm run dev` cục bộ), giống cách `MSG_API_TOKEN` của `/api/msg` hoạt động.
+- `components/AuthGate.tsx` bọc toàn bộ app: kiểm tra localStorage, nếu chưa có/sai thì hiện màn đăng nhập; xác thực bằng cách mở tạm 1 kết nối `/ws/ssh` gửi frame `auth` rồi đóng ngay (không SSH thật, không tốn gì).
+- Nếu server đổi mật khẩu mà trình duyệt còn lưu mật khẩu cũ, lần kết nối kế tiếp sẽ nhận `UNAUTHORIZED` → app tự xóa localStorage và quay lại màn đăng nhập (tự phục hồi, không bị kẹt).
+- Nút 🔒 ở trang chủ để đăng xuất thủ công (hữu ích khi dùng máy chung).
+
+### Đổi mật khẩu đăng nhập app
+
+Sửa `SITE_USER`/`SITE_PASSWORD` trong `~/web/ecosystem.config.js` (khối `env` của app `remote-ssh`), rồi:
+
+```bash
+cd ~/web && pm2 restart ecosystem.config.js --only remote-ssh --update-env
+```
+
+⚠️ **Bẫy pm2**: `pm2 restart remote-ssh --update-env` (theo tên, không trỏ vào file) **không** đọc lại `ecosystem.config.js` — cờ `--update-env` chỉ áp dụng biến môi trường của chính shell đang gõ lệnh. Phải restart **trỏ thẳng vào file** như trên thì biến mới mới được nạp.
+
 ## Đã deploy: https://ssh.ics.vn
 
-Chạy trên server ICS (161.118.203.249), có HTTPS và mật khẩu bảo vệ (HTTP Basic Auth, user `admin`).
+Chạy trên server ICS (161.118.203.249), có HTTPS. nginx chỉ lo TLS + reverse proxy, không còn xác thực (xem mục Đăng nhập ứng dụng ở trên).
 
 | | |
 |---|---|
@@ -59,7 +82,6 @@ Chạy trên server ICS (161.118.203.249), có HTTPS và mật khẩu bảo vệ
 | Process | pm2 `remote-ssh` (khai báo trong `~/web/ecosystem.config.js`) |
 | Cổng | `127.0.0.1:3100` — chỉ nghe localhost, ra ngoài qua nginx |
 | nginx | `/etc/nginx/sites-available/ssh.ics.vn` (WebSocket + `proxy_read_timeout 86400s`) |
-| Mật khẩu web | `/etc/nginx/.htpasswd-remote-ssh` |
 | SSL | Let's Encrypt, tự gia hạn bằng `certbot.timer` |
 
 ### Cập nhật code lên server
@@ -72,14 +94,7 @@ git push origin main
 
 # trên server
 cd ~/web/remote-ssh && git pull && npm ci && npm run build
-pm2 restart remote-ssh
-```
-
-### Đổi mật khẩu web
-
-```bash
-sudo sh -c 'echo "admin:$(openssl passwd -apr1)" > /etc/nginx/.htpasswd-remote-ssh'
-sudo systemctl reload nginx
+cd ~/web && pm2 restart ecosystem.config.js --only remote-ssh --update-env
 ```
 
 ### Deploy chỗ khác
@@ -100,4 +115,4 @@ Trong màn hình chat (⚙️): đặt **thư mục làm việc** (project mà C
 ## Lưu ý bảo mật
 
 - Thông tin server (kể cả mật khẩu/private key) lưu **nguyên văn trong localStorage** của trình duyệt và gửi tới `server.js` khi kết nối. Chỉ chạy app này trên máy/VPS bạn tin tưởng, và luôn dùng HTTPS khi ra internet.
-- App không có đăng nhập — ai truy cập được URL đều dùng được. Khi deploy công khai, chặn bằng Caddy `basic_auth`, VPN (Tailscale) hoặc firewall.
+- Trang chủ và các asset tĩnh (PWA icon, manifest…) không cần đăng nhập mới xem được — chỉ là vỏ UI trống, không có gì bí mật. Phần thật sự nhạy cảm (WebSocket SSH/Claude/schedule) luôn yêu cầu `SITE_USER`/`SITE_PASSWORD` như trên.
